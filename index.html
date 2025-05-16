@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>簡単シューティングゲーム - 多様な敵＆撃破演出</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; display: flex; justify-content: center; align-items: center; min-height: 100vh; position: relative; }
+        canvas { border: 1px solid #fff; background-color: #111; z-index: 10; }
+        #score { position: absolute; top: 10px; left: 10px; color: #fff; font-size: 16px; z-index: 11; }
+        #game-over { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #f00; font-size: 30px; font-weight: bold; display: none; z-index: 11; }
+        #restart-button { position: absolute; top: 60%; left: 50%; transform: translate(-50%, -50%); padding: 10px 20px; background-color: #444; color: #fff; border: none; border-radius: 5px; cursor: pointer; display: none; z-index: 11; }
+        .background-noise { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0.5; z-index: 1; }
+        .background-flash { position: fixed; bottom: 20px; right: 20px; width: 100px; height: 75px; pointer-events: none; opacity: 0.8; z-index: 2; }
+    </style>
+</head>
+<body>
+    <div class="background-noise">
+        <img src="noise.gif" alt="ノイズGIF" width="100%" height="100%">
+    </div>
+    <div class="background-flash">
+        <video src="flash.mp4" autoplay loop muted width="100%" height="100%"></video>
+    </div>
+    <canvas id="gameCanvas" width="480" height="320"></canvas>
+    <div id="score">Score: 0</div>
+    <div id="game-over">Game Over</div>
+    <button id="restart-button" onclick="startGame()">Restart</button>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let player;
+        let enemies = [];
+        let bullets = [];
+        let explosions = [];
+        let scoreElement = document.getElementById('score');
+        let gameOverElement = document.getElementById('game-over');
+        let restartButton = document.getElementById('restart-button');
+        let score = 0; 
+        
+        //enemyBullets
+        //（#^ω^）Ver4以降のバグ直せんのだが
+        //Geminiの実力はこんなもんなんか？
+        
+        let isGameOver = false;
+        const playerSpeed = 5;
+        const bulletSpeed = 10;
+        const normalEnemySpeed = 1;
+        const enemySpawnInterval = 75; // 少し頻度を上げる
+        const fireRate = 10;
+        let fireCounter = 0;
+        let isSpaceKeyPressed = false;
+        const enemyFireInterval = 120; // 通常の敵の発射頻度
+        const enemyBulletSpeed = 2; // 敵の弾の速度を落とす
+        const explosionDuration = 30;
+        const movingEnemySpawnRate = 0.4; // 移動する敵の出現率を上げる
+        const movingEnemySpeed = 0.4; // 基本の移動速度
+        const movingEnemyRange = 20;
+        const movingEnemyForwardSpeed = 0.3; // 前に進む速度
+        const movingEnemyFireInterval = 150; // 移動する敵の発射頻度
+
+        const keys = {};
+
+        document.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            if (e.code === 'Space') {
+                isSpaceKeyPressed = true;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+            if (e.code === 'Space') {
+                isSpaceKeyPressed = false;
+                fireCounter = 0;
+            }
+        });
+
+        class GameObject {
+            constructor(x, y, width, height, color) {
+                this.x = x;
+                this.y = y;
+                this.width = width;
+                this.height = height;
+                this.color = color;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+            }
+
+            checkCollision(other) {
+                return (
+                    this.x < other.x + other.width &&
+                    this.x + this.width > other.x &&
+                    this.y < other.y + other.height &&
+                    this.y + this.height > other.y
+                );
+            }
+        }
+
+        class Player extends GameObject {
+            constructor() {
+                super(canvas.width / 2 - 15, canvas.height - 30, 30, 20, 'lime');
+            }
+
+            update() {
+                if (keys['ArrowLeft'] && this.x > 0) {
+                    this.x -= playerSpeed;
+                }
+                if (keys['ArrowRight'] && this.x < canvas.width - this.width) {
+                    this.x += playerSpeed;
+                }
+                this.draw();
+            }
+
+            shoot() {
+                bullets.push(new Bullet(this.x + this.width / 2 - 5, this.y - 10));
+            }
+        }
+
+        class Enemy extends GameObject {
+            constructor(x, y) {
+                super(x, y, 20, 20, 'red');
+                this.fireTimer = Math.floor(Math.random() * enemyFireInterval);
+            }
+
+            update() {
+                this.y += normalEnemySpeed;
+                this.draw();
+                this.tryShoot();
+            }
+
+            tryShoot() {
+                this.fireTimer++;
+                if (this.fireTimer % enemyFireInterval === 0) {
+                    enemyBullets.push(new EnemyBullet(this.x + this.width / 2 - 3, this.y + this.height));
+                }
+            }
+        }
+
+        class MovingEnemy extends GameObject {
+            constructor(x, y) {
+                super(x, y, 20, 20, 'purple');
+                this.directionX = (Math.random() * 2 - 1) * movingEnemySpeed;
+                this.directionY = (Math.random() * 2 - 1) * movingEnemySpeed;
+                this.initialX = x;
+                this.initialY = y;
+                this.fireTimer = Math.floor(Math.random() * movingEnemyFireInterval);
+            }
+
+            update() {
+                this.x += this.directionX;
+                this.y += this.directionY + movingEnemyForwardSpeed;
+                this.draw();
+                this.tryShoot();
+
+                if (Math.abs(this.x - this.initialX) > movingEnemyRange) {
+                    this.directionX *= -1;
+                }
+                if (Math.abs(this.y - this.initialY) > movingEnemyRange) {
+                    this.directionY *= -1;
+                }
+            }
+
+            tryShoot() {
+                this.fireTimer++;
+                if (this.fireTimer % movingEnemyFireInterval === 0) {
+                    enemyBullets.push(new EnemyBullet(this.x + this.width / 2 - 3, this.y + this.height));
+                }
+            }
+        }
+
+        class Bullet extends GameObject {
+            constructor(x, y) {
+                super(x, y, 10, 10, 'yellow');
+            }
+
+            update() {
+                this.y -= bulletSpeed;
+                this.draw();
+            }
+        }
+
+        class EnemyBullet extends GameObject {
+            constructor(x, y) {
+                super(x, y, 6, 10, 'orange');
+            }
+
+            update() {
+                this.y += enemyBulletSpeed;
+                this.draw();
+            }
+        }
+
+        class Explosion {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.radius = 10;
+                this.duration = explosionDuration;
+                this.color = 'orange';
+            }
+
+            update() {
+                this.radius += 1;
+                this.duration--;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        let enemyBullets = [];
+
+        function spawnEnemy() {
+            if (Math.random() * enemySpawnInterval < 1) {
+                const x = Math.random() * (canvas.width - 20);
+                const y = -20;
+                if (Math.random() < movingEnemySpawnRate) {
+                    enemies.push(new MovingEnemy(x, y));
+                } else {
+                    enemies.push(new Enemy(x, y));
+                }
+            }
+        }
+
+        function updateGame() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            player.update();
+
+            spawnEnemy();
+            enemies.forEach((enemy, index) => {
+                enemy.update();
+                if (enemy.y > canvas.height + enemy.height) {
+                    enemies.splice(index, 1);
+                }
+                if (player.checkCollision(enemy)) {
+                    gameOver();
+                }
+            });
+
+            bullets.forEach((bullet, bulletIndex) => {
+                bullet.update();
+                if (bullet.y < 0) {
+                    bullets.splice(bulletIndex, 1);
+                    return;
+                }
+                enemies.forEach((enemy, enemyIndex) => {
+                    if (bullet.checkCollision(enemy)) {
+                        explosions.push(new Explosion(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2));
+                        bullets.splice(bulletIndex, 1);
+                        enemies.splice(enemyIndex, 1);
+                        score += 10;
+                        scoreElement.textContent = `Score: ${score}`;
+                    }
+                });
+            });
+
+            enemyBullets.forEach((bullet, index) => {
+                bullet.update();
+                if (bullet.y > canvas.height) {
+                    enemyBullets.splice(index, 1);
+                }
+                if (player.checkCollision(bullet)) {
+                    gameOver();
+                }
+            });
+
+            explosions.forEach((explosion, index) => {
+                explosion.update();
+                explosion.draw();
+                if (explosion.duration <= 0) {
+                    explosions.splice(index, 1);
+                }
+            });
+
+            if (isSpaceKeyPressed && !isGameOver) {
+                fireCounter++;
+                if (fireCounter % fireRate === 0) {
+                    player.shoot();
+                }
+            }
+
+            if (!isGameOver) {
+                requestAnimationFrame(updateGame);
+            }
+        }
+
+        function gameOver() {
+            isGameOver = true;
+            gameOverElement.style.display = 'block';
+            restartButton.style.display = 'block';
+            clearInterval(gameInterval);
+        }
+
+        function startGame() {
+            isGameOver = false;
+            gameOverElement.style.display = 'none';
+            restartButton.style.display = 'none';
+            score = 0;
+            scoreElement.textContent = 'Score: 0';
+            player = new Player();
+            enemies = [];
+            bullets = [];
+            enemyBullets = [];
+            explosions = [];
+            fireCounter = 0;
+            isSpaceKeyPressed = false;
+            requestAnimationFrame(updateGame);
+        }
+
+        document.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            if (e.code === 'Space') {
+                isSpaceKeyPressed = true;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+            if (e.code === 'Space') {
+                isSpaceKeyPressed = false;
+                fireCounter = 0;
+            }
+        });
+
+        startGame();
+    </script>
+</body>
+</html>
